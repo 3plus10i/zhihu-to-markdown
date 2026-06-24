@@ -376,11 +376,11 @@
                 font-family:${ZH.fontFamily};
             }
             #zhihu-to-markdown-btn {
-                padding:0 4px;
+                padding:4px 4px;
                 background:${ZH.blue};color:${ZH.white};
                 border:1px solid ${ZH.blue};border-radius:3px;
-                cursor:pointer;
-                line-height:32px;font-family:inherit;
+                cursor:pointer;font-size:16px;font-weight:400;
+                font-family:inherit;
                 box-shadow:0 2px 8px rgba(0,0,0,.12);outline:none;
                 transition:background-color .2s ease,border-color .2s ease,box-shadow .2s ease;
             }
