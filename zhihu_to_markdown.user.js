@@ -2,7 +2,7 @@
 // @name         知乎专栏转Markdown
 // @name:en      Zhihu to Markdown
 // @namespace    https://github.com/RustyPiano/zhihu-to-markdown
-// @version      1.0.0
+// @version      1.1.0
 // @description  一键将知乎专栏文章转换为Markdown格式，完美支持LaTeX数学公式
 // @description:en  Convert Zhihu articles to Markdown with one click, with full LaTeX math support
 // @author       RustyPiano
@@ -31,23 +31,29 @@
  * 1. 安装 Tampermonkey 或 Greasemonkey 浏览器扩展
  * 2. 安装本脚本
  * 3. 访问知乎专栏文章页面
- * 4. 点击页面右上角的「📋 转为Markdown」按钮
+ * 4. 点击页面右侧的「Markdown」悬浮按钮
  * 5. Markdown内容将自动复制到剪贴板
  */
 
 (function () {
     'use strict';
 
+    // ==================== 知乎设计风格 ====================
+    const ZH = {
+        blue: '#1772f6',
+        blueHover: '#0063e4',
+        white: '#fff',
+        grayBorder: '#ebedf0',
+        fontFamily: '-apple-system,BlinkMacSystemFont,"Helvetica Neue","PingFang SC","Microsoft YaHei","Source Han Sans SC","Noto Sans CJK SC","WenQuanYi Micro Hei","MiSans L3","Segoe UI",sans-serif',
+    };
+
     // ==================== 配置 ====================
     const CONFIG = {
-        // 按钮样式
-        button: {
-            top: '80px',
-            right: '20px',
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-        },
-        // 通知显示时间（毫秒）
-        notificationDuration: 2000,
+        buttonBottom: '80px',
+        buttonRight: '35px',
+        toastDuration: 3000,
+        // 设为 true 强制走降级模态框（测试用）
+        debugModal: false,
     };
 
     // ==================== 核心解析逻辑 ====================
@@ -158,6 +164,11 @@
             return element.textContent;
         }
 
+        // <noscript> — JS环境下子节点为原始文本，直接跳过
+        if (tagName === 'noscript') {
+            return '';
+        }
+
         // 分隔线
         if (tagName === 'hr') {
             return '\n\n---\n\n';
@@ -203,8 +214,10 @@
         const href = element.getAttribute('href') || '';
         const text = parseChildren(element).trim();
 
-        // 过滤知乎内部搜索链接（保留文本但不保留链接）
-        if (href.includes('zhida.zhihu.com/search')) {
+        // 知乎关键词实体链接(知乎直答，内部搜索) → 仅保留文本
+        if (element.classList.contains('RichContent-EntityWord')
+            || href.includes('zhida.zhihu.com/search')
+            || href.includes('www.zhihu.com/search')) {
             return text;
         }
 
@@ -239,11 +252,13 @@
      * 解析图片
      */
     function parseImage(element) {
-        const src = element.getAttribute('src') ||
+        // 这里的优先级必须后置src属性，否则会错误抓到懒加载占位符
+        const src = element.getAttribute('data-original') ||
+            element.getAttribute('data-actualsrc') ||
             element.getAttribute('data-src') ||
-            element.getAttribute('data-original') || '';
+            element.getAttribute('src') || '';
         const alt = element.getAttribute('alt') || '';
-        return src ? `![${alt}](${src})` : '';
+        return src ? `![${alt}](${src})  ` : '';
     }
 
     // ==================== 工具函数 ====================
@@ -252,7 +267,7 @@
      * 规范化空白字符
      */
     function normalizeWhitespace(text) {
-        let lines = text.split('\n').map(line => line.trim());
+        let lines = text.split('\n').map(line => line.replace(/^[ \t]+/, ''));  // 保留行末的双空格 markdown 硬换行标记
         text = lines.join('\n');
         text = text.replace(/\n{3,}/g, '\n\n');
         return text.trim();
@@ -281,6 +296,28 @@
     }
 
     /**
+     * 获取作者名和个人主页链接
+     */
+    function getAuthorInfo() {
+        const nameEl = document.querySelector('.AuthorInfo-head .UserLink-link');
+        if (!nameEl || !nameEl.textContent.trim()) return { name: '', url: '' };
+        const name = nameEl.textContent.trim();
+        let url = nameEl.getAttribute('href') || '';
+        if (url.startsWith('//')) url = 'https:' + url;
+        return { name, url };
+    }
+
+    /**
+     * 获取发布时间 / 编辑时间文本
+     */
+    function getTimeInfo() {
+        const el = document.querySelector('.ContentItem-time.full')  // 回答页
+                || document.querySelector('.ContentItem-time[role="button"]')  // 专栏页
+                || document.querySelector('.ContentItem-time');
+        return el ? el.textContent.trim().replace(/\s+/g, ' ') : '';
+    }
+
+    /**
      * 转换为Markdown
      */
     function convertToMarkdown() {
@@ -299,66 +336,172 @@
         }
 
         if (!contentDiv) {
-            alert('❌ 未找到文章内容区域\n\n请确保当前页面是知乎专栏文章或回答页面。');
+            alert('未找到文章内容区域\n\n请确保当前页面是知乎专栏文章或回答页面。');
             return null;
         }
 
-        // 解析内容
-        let markdown = parseChildren(contentDiv);
-        markdown = normalizeWhitespace(markdown);
+        // 解析正文
+        let body = parseChildren(contentDiv);
+        body = normalizeWhitespace(body);
 
-        // 添加标题
+        // 构建头部：标题 + 作者 + 时间
+        let header = '';
         const title = getTitle();
-        if (title) {
-            markdown = `# ${title}\n\n${markdown}`;
-        }
+        if (title) header += `# ${title}\n\n`;
 
-        return markdown;
+        const { name, url } = getAuthorInfo();
+        const timeStr = getTimeInfo();
+        const pageUrl = location.href;
+        if (pageUrl) header += `原文：${pageUrl}  \n`;  // 双空格是必须的
+        if (name && url) header += `作者：[${name}](${url})  \n`;
+        if (timeStr) header += `${timeStr}\n`;
+        if (header && !header.endsWith('\n\n')) header += '  \n';
+
+        return header + body;
     }
 
     // ==================== UI 组件 ====================
 
     /**
-     * 创建转换按钮
+     * 注入 tooltip 箭头样式
+     */
+    function injectTooltipStyle() {
+        if (document.getElementById('zhihu-md-style')) return;
+        const style = document.createElement('style');
+        style.id = 'zhihu-md-style';
+        style.textContent = `
+            #zhihu-md-wrapper {
+                position:fixed;bottom:${CONFIG.buttonBottom};right:${CONFIG.buttonRight};
+                z-index:9999;display:flex;align-items:center;gap:4px;
+                font-family:${ZH.fontFamily};
+            }
+            #zhihu-to-markdown-btn {
+                padding:0 4px;
+                background:${ZH.blue};color:${ZH.white};
+                border:1px solid ${ZH.blue};border-radius:3px;
+                cursor:pointer;
+                line-height:32px;font-family:inherit;
+                box-shadow:0 2px 8px rgba(0,0,0,.12);outline:none;
+                transition:background-color .2s ease,border-color .2s ease,box-shadow .2s ease;
+            }
+            #zhihu-to-markdown-btn:hover {
+                background:${ZH.blueHover};border-color:${ZH.blueHover};
+                box-shadow:0 4px 12px rgba(23,114,246,.25);
+            }
+            .zhihu-md-tooltip {
+                position:fixed;z-index:10000;
+                background:rgba(25,27,31,.8);color:#fff;
+                border-radius:4px;font-size:13px;
+                padding:6px 8px;white-space:nowrap;
+                font-family:${ZH.fontFamily};
+                opacity:0;visibility:hidden;
+                transition:opacity .15s ease,visibility .15s ease;
+                pointer-events:none;
+            }
+            .zhihu-md-tooltip-arrow {
+                position:absolute;bottom:0;left:50%;
+                width:16px;height:8px;
+                transform:translate(-50%,100%);
+                overflow:hidden;
+            }
+            .zhihu-md-tooltip-arrow::after {
+                content:'';display:block;
+                width:8px;height:8px;
+                background:rgba(25,27,31,.8);
+                transform:rotate(45deg);
+                margin:-4px auto 0;
+            }
+            #zhihu-md-close-btn {
+                width:20px;height:20px;
+                border-radius:50%;border:none;
+                background:rgba(0,0,0,.06);color:#646566;
+                cursor:pointer;font-size:13px;line-height:20px;
+                text-align:center;padding:0;outline:none;
+                font-family:inherit;flex-shrink:0;
+                display:flex;align-items:center;justify-content:center;
+                opacity:0;transition:opacity .15s ease;
+            }
+            #zhihu-md-wrapper:hover #zhihu-md-close-btn {
+                opacity:1;
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    /**
+     * 悬浮按钮 —— 复制 icon + 文字，hover 显示 tooltip
      */
     function createButton() {
+        injectTooltipStyle();
+
+        const wrapper = document.createElement('div');
+        wrapper.id = 'zhihu-md-wrapper';
+
         const btn = document.createElement('button');
-        btn.textContent = '📋 转为Markdown';
         btn.id = 'zhihu-to-markdown-btn';
+        btn.innerHTML = `<span style="display:inline-flex;align-items:center;gap:6px">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M7.024 3.75c0-.966.784-1.75 1.75-1.75h10.477c.966 0 1.75.783 1.75 1.75v11.498a1.75 1.75 0 0 1-1.75 1.75H8.774a1.75 1.75 0 0 1-1.75-1.75V3.75Zm1.75-.25a.25.25 0 0 0-.25.25v11.498c0 .139.112.25.25.25h10.477a.25.25 0 0 0 .25-.25V3.75a.25.25 0 0 0-.25-.25H8.774Z"/><path d="M5.5 7.5H3.75a.25.25 0 0 0-.25.25v11.498c0 .139.112.25.25.25h10.008a.25.25 0 0 0 .25-.25V17.5h1.5v1.998a1.75 1.75 0 0 1-1.75 1.75H3.75A1.75 1.75 0 0 1 2 19.498V7.75C2 6.784 2.784 6 3.75 6H5.5v1.5Z"/></svg>
+            <span class="zhihu-md-btn-text">Markdown</span>
+        </span>`;
 
-        Object.assign(btn.style, {
-            position: 'fixed',
-            top: CONFIG.button.top,
-            right: CONFIG.button.right,
-            zIndex: '9999',
-            padding: '10px 16px',
-            background: CONFIG.button.background,
-            color: 'white',
-            border: 'none',
-            borderRadius: '8px',
-            cursor: 'pointer',
-            fontSize: '14px',
-            fontWeight: '500',
-            boxShadow: '0 4px 15px rgba(102, 126, 234, 0.4)',
-            transition: 'all 0.3s ease',
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        const closeBtn = document.createElement('button');
+        closeBtn.id = 'zhihu-md-close-btn';
+        closeBtn.innerHTML = '&#x2715;';
+        closeBtn.title = '隐藏此按钮';
+
+        const tooltip = document.createElement('div');
+        tooltip.className = 'zhihu-md-tooltip';
+        const isPost = location.hostname === 'zhuanlan.zhihu.com';
+        tooltip.innerHTML = `<div class="zhihu-md-tooltip-arrow"></div>${isPost ? '复制文章为markdown格式' : '复制回答为markdown格式'}`;
+        document.body.appendChild(tooltip);
+
+        // tooltip 基于 wrapper 定位
+        wrapper.addEventListener('mouseenter', () => {
+            const r = wrapper.getBoundingClientRect();
+            tooltip.style.left = `${r.left + r.width / 2}px`;
+            tooltip.style.top = `${r.top - 8}px`;
+            tooltip.style.transform = 'translate(-50%, -100%)';
+            tooltip.style.opacity = '1';
+            tooltip.style.visibility = 'visible';
+        });
+        wrapper.addEventListener('mouseleave', () => {
+            tooltip.style.opacity = '0';
+            tooltip.style.visibility = 'hidden';
         });
 
-        // 悬停效果
-        btn.addEventListener('mouseenter', () => {
-            btn.style.transform = 'translateY(-2px)';
-            btn.style.boxShadow = '0 6px 20px rgba(102, 126, 234, 0.5)';
+        closeBtn.addEventListener('click', () => {
+            wrapper.style.display = 'none';
+            tooltip.style.display = 'none';
         });
 
-        btn.addEventListener('mouseleave', () => {
-            btn.style.transform = 'translateY(0)';
-            btn.style.boxShadow = '0 4px 15px rgba(102, 126, 234, 0.4)';
-        });
-
-        // 点击事件
         btn.addEventListener('click', handleConvert);
 
-        document.body.appendChild(btn);
+        wrapper.appendChild(closeBtn);
+        wrapper.appendChild(btn);
+        document.body.appendChild(wrapper);
+
+        return { btn, wrapper, tooltip };
+    }
+
+    let btnEl = null;
+    let tooltipEl = null;
+
+    /**
+     * 按钮文案临时切换（复用按钮元素）
+     */
+    function showToast(text, ok) {
+        if (!btnEl) return;
+        const span = btnEl.querySelector('.zhihu-md-btn-text');
+        if (!span) return;
+        const orig = span.textContent;
+        span.textContent = text;
+        btnEl.style.background = ok ? '#00c853' : '#f44336';
+        btnEl.style.borderColor = ok ? '#00c853' : '#f44336';
+        setTimeout(() => {
+            span.textContent = orig;
+            btnEl.style.background = ZH.blue;
+            btnEl.style.borderColor = ZH.blue;
+        }, CONFIG.toastDuration);
     }
 
     /**
@@ -367,8 +510,6 @@
     function handleConvert() {
         const markdown = convertToMarkdown();
         if (!markdown) return;
-
-        // 复制到剪贴板
         copyToClipboard(markdown);
     }
 
@@ -376,159 +517,68 @@
      * 复制到剪贴板
      */
     function copyToClipboard(text) {
-        // 优先使用 GM_setClipboard
+        if (CONFIG.debugModal) { showModal(text); return; }
+        const done = () => showToast('已复制', true);
+
         if (typeof GM_setClipboard !== 'undefined') {
             GM_setClipboard(text, 'text');
-            showNotification('✅ 已复制到剪贴板！', 'success');
+            done();
             return;
         }
-
-        // 降级使用 navigator.clipboard
         if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(() => {
-                showNotification('✅ 已复制到剪贴板！', 'success');
-            }).catch(() => {
-                showModal(text);
-            });
+            navigator.clipboard.writeText(text).then(done).catch(() => showModal(text));
             return;
         }
-
-        // 最后降级：显示模态框供手动复制
         showModal(text);
     }
 
     /**
-     * 显示通知
-     */
-    function showNotification(message, type = 'success') {
-        const notification = document.createElement('div');
-        notification.textContent = message;
-
-        const bgColor = type === 'success' ? '#10b981' : '#ef4444';
-
-        Object.assign(notification.style, {
-            position: 'fixed',
-            top: '130px',
-            right: '20px',
-            zIndex: '10000',
-            padding: '12px 20px',
-            background: bgColor,
-            color: 'white',
-            borderRadius: '8px',
-            fontSize: '14px',
-            fontWeight: '500',
-            boxShadow: `0 4px 15px ${bgColor}66`,
-            fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-            opacity: '0',
-            transform: 'translateX(20px)',
-            transition: 'all 0.3s ease',
-        });
-
-        document.body.appendChild(notification);
-
-        // 动画显示
-        requestAnimationFrame(() => {
-            notification.style.opacity = '1';
-            notification.style.transform = 'translateX(0)';
-        });
-
-        // 自动消失
-        setTimeout(() => {
-            notification.style.opacity = '0';
-            notification.style.transform = 'translateX(20px)';
-            setTimeout(() => notification.remove(), 300);
-        }, CONFIG.notificationDuration);
-    }
-
-    /**
-     * 显示模态框（降级方案）
+     * 最简模态框（降级方案，几乎不会触发）
      */
     function showModal(content) {
         const overlay = document.createElement('div');
         Object.assign(overlay.style, {
-            position: 'fixed',
-            top: '0',
-            left: '0',
-            right: '0',
-            bottom: '0',
-            background: 'rgba(0,0,0,0.5)',
-            zIndex: '10000',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
+            position: 'fixed', inset: '0', zIndex: '10000',
+            background: 'rgba(0,0,0,.5)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
         });
 
-        const modal = document.createElement('div');
-        Object.assign(modal.style, {
-            background: 'white',
-            borderRadius: '12px',
-            padding: '20px',
-            maxWidth: '80%',
-            maxHeight: '80%',
-            display: 'flex',
-            flexDirection: 'column',
-            boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+        const card = document.createElement('div');
+        Object.assign(card.style, {
+            background: '#fff', borderRadius: '8px', padding: '24px',
+            maxWidth: '640px', width: '90%',
+            boxShadow: '0 8px 24px rgba(0,0,0,.15)',
+            fontFamily: ZH.fontFamily,
         });
 
-        modal.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-                <h3 style="margin: 0; font-size: 18px;">📄 Markdown 内容</h3>
-                <button id="modal-close" style="background: none; border: none; font-size: 24px; cursor: pointer; padding: 5px; color: #666;">&times;</button>
-            </div>
-            <textarea id="modal-textarea" readonly style="
-                flex: 1;
-                width: 600px;
-                height: 400px;
-                font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
-                font-size: 13px;
-                padding: 12px;
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                resize: none;
-                line-height: 1.5;
-            ">${content}</textarea>
-            <button id="modal-copy" style="
-                margin-top: 15px;
-                padding: 12px 24px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                border: none;
-                border-radius: 8px;
-                cursor: pointer;
-                font-size: 14px;
-                font-weight: 500;
-            ">复制全部内容</button>
-        `;
+        card.innerHTML = `<div style="font-size:16px;font-weight:600;color:#323232;margin-bottom:16px;">自动复制失败，请手动全选并复制</div>`;
 
-        overlay.appendChild(modal);
+        const textarea = document.createElement('textarea');
+        textarea.readOnly = true;
+        textarea.value = content;
+        Object.assign(textarea.style, {
+            width: '100%', height: '400px', padding: '12px',
+            fontSize: '13px', lineHeight: '1.6',
+            fontFamily: 'Monaco,Menlo,Consolas,monospace',
+            border: `1px solid ${ZH.grayBorder}`,
+            borderRadius: '4px', resize: 'none', outline: 'none',
+            boxSizing: 'border-box',
+        });
+
+        card.appendChild(textarea);
+        overlay.appendChild(card);
         document.body.appendChild(overlay);
-
-        // 事件绑定
-        document.getElementById('modal-close').onclick = () => overlay.remove();
-        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-
-        document.getElementById('modal-copy').onclick = () => {
-            const textarea = document.getElementById('modal-textarea');
-            textarea.select();
-            document.execCommand('copy');
-            const btn = document.getElementById('modal-copy');
-            btn.textContent = '✅ 已复制！';
-            btn.style.background = '#10b981';
-            setTimeout(() => {
-                btn.textContent = '复制全部内容';
-                btn.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
-            }, 1500);
-        };
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        setTimeout(() => textarea.select(), 0);
     }
 
     // ==================== 初始化 ====================
 
     function init() {
-        // 避免重复创建
-        if (document.getElementById('zhihu-to-markdown-btn')) {
-            return;
-        }
-        createButton();
+        if (document.getElementById('zhihu-md-wrapper')) return;
+        const objs = createButton();
+        btnEl = objs.btn;
+        tooltipEl = objs.tooltip;
     }
 
     // 页面加载完成后初始化
