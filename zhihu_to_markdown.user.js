@@ -1,44 +1,35 @@
 // ==UserScript==
-// @name         知乎专栏转Markdown
-// @name:en      Zhihu to Markdown
-// @namespace    https://github.com/RustyPiano/zhihu-to-markdown
-// @version      1.1.0
-// @description  一键将知乎专栏文章转换为Markdown格式，完美支持LaTeX数学公式
-// @description:en  Convert Zhihu articles to Markdown with one click, with full LaTeX math support
-// @author       RustyPiano
+// @name         知乎转Markdown
+// @namespace    https://github.com/3plus10i/zhihu-to-markdown
+// @version      2.0.0
+// @description  一键将知乎回答和文章转换为Markdown格式，支持公式、图片、链接卡片、艾特用户等完整元素
+// @author       3plus10i
 // @license      MIT
-// @homepage     https://github.com/RustyPiano/zhihu-to-markdown
-// @supportURL   https://github.com/RustyPiano/zhihu-to-markdown/issues
+// @homepage     https://github.com/3plus10i/zhihu-to-markdown
 // @match        https://zhuanlan.zhihu.com/p/*
 // @match        https://www.zhihu.com/question/*/answer/*
 // @icon         https://static.zhihu.com/heifetz/favicon.ico
 // @grant        GM_setClipboard
-// @grant        GM_notification
 // @run-at       document-idle
 // ==/UserScript==
 
 /**
- * 知乎专栏转Markdown
+ * 知乎转Markdown
+ * Forked from RustyPiano/zhihu-to-markdown (MIT License)
  * 
  * 功能特性：
- * - 一键转换知乎专栏文章为Markdown格式
- * - 自动识别行内公式和块级公式（以\\结尾的为块级公式）
- * - 自动替换 \bm 为 \boldsymbol（兼容Typora等编辑器）
- * - 支持标题、引用、列表、链接、图片等常见元素
- * - 转换后自动复制到剪贴板
+ * - 一键转换知乎回答/专栏文章为Markdown
+ * - 支持标题、引用、列表、链接、图片、代码、公式、链接卡片、艾特用户等几乎所有元素
+ * - 附带作者名、作者主页、回答/文章链接、回答/文章时间戳等元信息
  * 
  * 使用方法：
- * 1. 安装 Tampermonkey 或 Greasemonkey 浏览器扩展
- * 2. 安装本脚本
- * 3. 访问知乎专栏文章页面
- * 4. 点击页面右侧的「Markdown」悬浮按钮
- * 5. Markdown内容将自动复制到剪贴板
+ * 点击知乎回答/文章页面右侧「Markdown」按钮以复制
  */
 
 (function () {
     'use strict';
 
-    // ==================== 知乎设计风格 ====================
+    // 知乎设计一致风格
     const ZH = {
         blue: '#1772f6',
         blueHover: '#0063e4',
@@ -47,16 +38,15 @@
         fontFamily: '-apple-system,BlinkMacSystemFont,"Helvetica Neue","PingFang SC","Microsoft YaHei","Source Han Sans SC","Noto Sans CJK SC","WenQuanYi Micro Hei","MiSans L3","Segoe UI",sans-serif',
     };
 
-    // ==================== 配置 ====================
+    // 常数配置
     const CONFIG = {
         buttonBottom: '80px',
         buttonRight: '35px',
-        toastDuration: 3000,
         // 设为 true 强制走降级模态框（测试用）
         debugModal: false,
     };
 
-    // ==================== 核心解析逻辑 ====================
+    // 解析元素
 
     /**
      * 解析HTML元素为Markdown文本
@@ -159,9 +149,19 @@
             return content ? `\n*${content}*\n` : '';
         }
 
+        // 知乎用户@链接
+        if (tagName === 'span' && element.classList.contains('UserLink')) {
+            return parseUserLink(element);
+        }
+
         // 知乎搜索实体链接
         if (tagName === 'span' && element.hasAttribute('data-search-entity')) {
             return element.textContent;
+        }
+
+        // 链接卡片 <div class="RichText-LinkCardContainer">
+        if (tagName === 'div' && element.classList.contains('RichText-LinkCardContainer')) {
+            return parseLinkCard(element);
         }
 
         // <noscript> — JS环境下子节点为原始文本，直接跳过
@@ -191,9 +191,6 @@
     function parseMathFormula(element) {
         let tex = element.getAttribute('data-tex') || '';
 
-        // 替换 \bm 为 \boldsymbol（Typora等编辑器兼容）
-        tex = tex.replace(/\\bm\b/g, '\\boldsymbol');
-
         // 判断是否为块级公式：以 \\ 结尾
         const isBlock = tex.trim().endsWith('\\\\');
 
@@ -211,7 +208,7 @@
      * 解析链接
      */
     function parseLink(element) {
-        const href = element.getAttribute('href') || '';
+        let href = element.getAttribute('href') || '';
         const text = parseChildren(element).trim();
 
         // 知乎关键词实体链接(知乎直答，内部搜索) → 仅保留文本
@@ -222,9 +219,36 @@
         }
 
         if (href && text) {
+            if (href.startsWith('//')) href = 'https:' + href;
             return `[${text}](${href})`;
         }
         return text;
+    }
+
+    /**
+     * 解析知乎正文中的用户艾特链接
+     */
+    function parseUserLink(element) {
+        const link = element.querySelector('a.UserLink-link');
+        if (!link) return element.textContent;
+        let href = link.getAttribute('href') || '';
+        if (href.startsWith('//')) href = 'https:' + href;
+        const text = link.textContent.trim();
+        return text ? `[${text}](${href})` : '';
+    }
+
+    /**
+     * 解析链接卡片
+     */
+    function parseLinkCard(element) {
+        const card = element.querySelector('a.LinkCard');
+        if (!card) return '';
+        let href = card.getAttribute('href') || '';
+        if (href.startsWith('//')) href = 'https:' + href;
+        const title = card.querySelector('.LinkCard-title')?.textContent.trim() || '';
+        const tag = card.querySelector('a.tag')?.textContent.trim() || '链接';
+        if (!title || !href) return '';
+        return `\n\n> **[${tag}]** [${title}](${href})\n\n`;
     }
 
     /**
@@ -261,7 +285,7 @@
         return src ? `![${alt}](${src})  ` : '';
     }
 
-    // ==================== 工具函数 ====================
+    // 工具函数 
 
     /**
      * 规范化空白字符
@@ -360,7 +384,7 @@
         return header + body;
     }
 
-    // ==================== UI 组件 ====================
+    // UI 组件 
 
     /**
      * 注入 tooltip 箭头样式
@@ -487,7 +511,7 @@
     let tooltipEl = null;
 
     /**
-     * 按钮文案临时切换（复用按钮元素）
+     * 复用按钮为toast
      */
     function showToast(text, ok) {
         if (!btnEl) return;
@@ -501,7 +525,7 @@
             span.textContent = orig;
             btnEl.style.background = ZH.blue;
             btnEl.style.borderColor = ZH.blue;
-        }, CONFIG.toastDuration);
+        }, 3000);
     }
 
     /**
@@ -533,7 +557,7 @@
     }
 
     /**
-     * 最简模态框（降级方案，几乎不会触发）
+     * 手动复制模态框（降级方案，几乎不会触发）
      */
     function showModal(content) {
         const overlay = document.createElement('div');
@@ -572,7 +596,7 @@
         setTimeout(() => textarea.select(), 0);
     }
 
-    // ==================== 初始化 ====================
+    // 初始化 
 
     function init() {
         if (document.getElementById('zhihu-md-wrapper')) return;
