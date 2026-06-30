@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         复制知乎内容为Markdown
 // @namespace    https://github.com/3plus10i/zhihu-to-markdown
-// @version      2.0.0
+// @version      2.1
 // @description  一键将知乎回答和文章复制为Markdown格式，支持公式、图片、链接卡片、艾特用户等几乎所有元素
 // @author       3plus10i
 // @license      MIT
@@ -73,7 +73,7 @@
         { test: n => isTag(n, 'a'),
           handle: parseLink },
         { test: n => isTag(n, 'br'),
-          handle: () => '\n' },
+          handle: () => '  \n' }, // 2 个空格 + 换行符
         { test: n => isTag(n, 'strong', 'b'),
           handle: n => wrapInline(n, '**') },
         { test: n => isTag(n, 'em', 'i'),
@@ -92,6 +92,8 @@
           handle: parseList },
         { test: n => isTag(n, 'img'),
           handle: parseImage },
+        { test: n => isTag(n, 'table'),
+          handle: parseTable },
         { test: n => isTag(n, 'figure'),
           handle: n => { const c = parseChildren(n).trim(); return c ? `\n\n${c}\n\n` : ''; } },
         { test: n => isTag(n, 'figcaption'),
@@ -199,7 +201,8 @@
         if (!card) return '';
         let href = card.getAttribute('href') || '';
         if (href.startsWith('//')) href = 'https:' + href;
-        const title = card.querySelector('.LinkCard-title')?.textContent.trim() || '';
+        // 标题优先取 data-text 属性，确保渲染前就有值
+        const title = card.getAttribute('data-text') || card.querySelector('.LinkCard-title')?.textContent.trim() || '';
         const tag = card.querySelector('a.tag')?.textContent.trim() || '链接';
         if (!title || !href) return '';
         return `\n\n> **[${tag}]** [${title}](${href})\n\n`;
@@ -233,7 +236,7 @@
         const content = parseChildren(element).trim();
         if (!content) return '';
         const lines = content.split('\n');
-        const quoted = lines.map(line => line.trim() ? `> ${line.trim()}` : '>').join('\n');
+        const quoted = lines.map(line => line.trim() ? `> ${line.trim()}  ` : '>').join('\n');
         return `\n\n${quoted}\n\n`;
     }
 
@@ -268,6 +271,33 @@
             element.getAttribute('src') || '';
         const alt = element.getAttribute('alt') || '';
         return src ? `![${alt}](${src})  ` : '';
+    }
+
+    /**
+     * 解析表格
+     */
+    function parseTable(element) {
+        const rows = Array.from(element.querySelectorAll(':scope > tbody > tr, :scope > thead > tr, :scope > tr'));
+        if (!rows.length) return '';
+        const cols = rows.map(row =>
+            Array.from(row.querySelectorAll(':scope > th, :scope > td'))
+                .map(cell => parseChildren(cell).trim().replace(/\|/g, '\\|'))
+        );
+        const colCount = Math.max(...cols.map(r => r.length));
+        const widths = Array.from({ length: colCount }, (_, i) =>
+            Math.max(...cols.map(r => (r[i] || '').length), 3)
+        );
+        const pad = (text, i) => ' ' + text + ' '.repeat(widths[i] - text.length + 1);
+        const separator = widths.map(w => ':' + '-'.repeat(w) + ':').join('|');
+        const hasHeader = element.querySelector('th');
+        const lines = cols.map(row => {
+            const padded = row.map((cell, ci) => pad(cell, ci)).join('|');
+            return '|' + padded + '|';
+        });
+        if (hasHeader) {
+            lines.splice(1, 0, '|' + separator + '|');
+        }
+        return '\n\n' + lines.join('\n') + '\n\n';
     }
 
     // 工具函数 

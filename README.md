@@ -15,7 +15,7 @@
 
 ## 安装
 
-1. 推荐 [从 Greasy Fork 安装](https://greasyfork.org/) 
+1. 推荐 [从 Greasy Fork 安装](https://update.greasyfork.org/scripts/585017/%E5%A4%8D%E5%88%B6%E7%9F%A5%E4%B9%8E%E5%86%85%E5%AE%B9%E4%B8%BAMarkdown.user.js) 
 2. 或者 [从 Github 安装脚本](https://raw.githubusercontent.com/3plus10i/zhihu-to-markdown/main/zhihu_to_markdown.user.js)
 
 ## 项目主页
