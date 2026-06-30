@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         知乎转Markdown
+// @name         复制知乎内容为Markdown
 // @namespace    https://github.com/3plus10i/zhihu-to-markdown
 // @version      2.0.0
-// @description  一键将知乎回答和文章转换为Markdown格式，支持公式、图片、链接卡片、艾特用户等完整元素
+// @description  一键将知乎回答和文章复制为Markdown格式，支持公式、图片、链接卡片、艾特用户等几乎所有元素
 // @author       3plus10i
 // @license      MIT
 // @homepage     https://github.com/3plus10i/zhihu-to-markdown
@@ -14,11 +14,11 @@
 // ==/UserScript==
 
 /**
- * 知乎转Markdown
+ * 复制知乎内容为Markdown
  * Forked from RustyPiano/zhihu-to-markdown (MIT License)
  * 
  * 功能特性：
- * - 一键转换知乎回答/专栏文章为Markdown
+ * - 一键复制知乎回答/专栏文章为Markdown
  * - 支持标题、引用、列表、链接、图片、代码、公式、链接卡片、艾特用户等几乎所有元素
  * - 附带作者名、作者主页、回答/文章链接、回答/文章时间戳等元信息
  * 
@@ -44,145 +44,105 @@
         buttonRight: '35px',
         // 设为 true 强制走降级模态框（测试用）
         debugModal: false,
+        // 设为 true 强制触发复制失败提示（测试用）
+        debugFailure: false,
     };
 
-    // 解析元素
+    /**
+     * 处理器注册表 必须特异性高的靠前
+     * @type {Array<{test: (node: Node) => boolean, handle: (node: Node) => string}>}
+     */
+    const handlers = [
+        // 节点类型基础 
+        { test: n => n.nodeType === Node.TEXT_NODE,
+          handle: n => n.textContent.replace(/\s+/g, ' ') },
+        { test: n => n.nodeType !== Node.ELEMENT_NODE,
+          handle: () => '' },
+
+        // 知乎特色元素（类选择器匹配，优先于通用标签） 
+        { test: n => n.matches?.('span.ztext-math'),
+          handle: parseMathFormula },
+        { test: n => n.matches?.('span.UserLink'),
+          handle: parseUserLink },
+        { test: n => n.matches?.('span[data-search-entity]'),
+          handle: n => n.textContent },
+        { test: n => n.matches?.('div.RichText-LinkCardContainer'),
+          handle: parseLinkCard },
+
+        // 通用 HTML 元素 
+        { test: n => isTag(n, 'a'),
+          handle: parseLink },
+        { test: n => isTag(n, 'br'),
+          handle: () => '\n' },
+        { test: n => isTag(n, 'strong', 'b'),
+          handle: n => wrapInline(n, '**') },
+        { test: n => isTag(n, 'em', 'i'),
+          handle: n => wrapInline(n, '*') },
+        { test: n => isTag(n, 'code'),
+          handle: n => `\`${n.textContent}\`` },
+        { test: n => isTag(n, 'pre'),
+          handle: parseCodeBlock },
+        { test: n => isTag(n, 'p'),
+          handle: parseParagraph },
+        { test: n => isTag(n, 'blockquote'),
+          handle: parseBlockquote },
+        { test: n => isHeading(n),
+          handle: parseHeading },
+        { test: n => isTag(n, 'ul', 'ol'),
+          handle: parseList },
+        { test: n => isTag(n, 'img'),
+          handle: parseImage },
+        { test: n => isTag(n, 'figure'),
+          handle: n => { const c = parseChildren(n).trim(); return c ? `\n\n${c}\n\n` : ''; } },
+        { test: n => isTag(n, 'figcaption'),
+          handle: n => { const c = parseChildren(n).trim(); return c ? `\n*${c}*\n` : ''; } },
+        { test: n => isTag(n, 'noscript'),
+          handle: () => '' },
+        { test: n => isTag(n, 'hr'),
+          handle: () => '\n\n---\n\n' },
+    ];
+
+    // 匹配工具
+
+    /** 判断节点是否匹配指定标签名 */
+    function isTag(node, ...names) {
+        return node.nodeType === Node.ELEMENT_NODE
+            && names.some(name => node.tagName === name.toUpperCase());
+    }
+
+    /** 判断是否为标题 */
+    function isHeading(node) {
+        return node.nodeType === Node.ELEMENT_NODE && /^H[1-6]$/.test(node.tagName);
+    }
+
+    // 分发与递归
 
     /**
-     * 解析HTML元素为Markdown文本
-     * @param {Node} element - 要解析的DOM节点
-     * @returns {string} Markdown文本
+     * 找到首个匹配的处理器并执行
      */
-    function parseElement(element) {
-        // 文本节点
-        if (element.nodeType === Node.TEXT_NODE) {
-            return element.textContent.replace(/\s+/g, ' ');
+    function dispatch(node) {
+        for (const { test, handle } of handlers) {
+            if (test(node)) return handle(node);
         }
-
-        // 非元素节点跳过
-        if (element.nodeType !== Node.ELEMENT_NODE) {
-            return '';
-        }
-
-        const tagName = element.tagName.toLowerCase();
-
-        // 数学公式 <span class="ztext-math">
-        if (tagName === 'span' && element.classList.contains('ztext-math')) {
-            return parseMathFormula(element);
-        }
-
-        // 链接 <a>
-        if (tagName === 'a') {
-            return parseLink(element);
-        }
-
-        // 换行 <br>
-        if (tagName === 'br') {
-            return '\n';
-        }
-
-        // 粗体
-        if (tagName === 'strong' || tagName === 'b') {
-            const text = parseChildren(element).trim();
-            return text ? `**${text}**` : '';
-        }
-
-        // 斜体
-        if (tagName === 'em' || tagName === 'i') {
-            const text = parseChildren(element).trim();
-            return text ? `*${text}*` : '';
-        }
-
-        // 行内代码
-        if (tagName === 'code') {
-            return `\`${element.textContent}\``;
-        }
-
-        // 代码块
-        if (tagName === 'pre') {
-            const code = element.querySelector('code');
-            const language = code?.className.match(/language-(\w+)/)?.[1] || '';
-            const content = code?.textContent || element.textContent;
-            return `\n\n\`\`\`${language}\n${content}\n\`\`\`\n\n`;
-        }
-
-        // 段落
-        if (tagName === 'p') {
-            if (element.classList.contains('ztext-empty-paragraph')) {
-                return '\n\n';
-            }
-            const content = parseChildren(element).trim();
-            return content ? `\n\n${content}\n\n` : '';
-        }
-
-        // 引用块
-        if (tagName === 'blockquote') {
-            return parseBlockquote(element);
-        }
-
-        // 标题 h1-h6
-        if (/^h[1-6]$/.test(tagName)) {
-            const level = parseInt(tagName[1]);
-            const content = parseChildren(element).trim();
-            return `\n\n${'#'.repeat(level)} ${content}\n\n`;
-        }
-
-        // 列表
-        if (tagName === 'ul' || tagName === 'ol') {
-            return parseList(element, tagName);
-        }
-
-        // 图片
-        if (tagName === 'img') {
-            return parseImage(element);
-        }
-
-        // figure（通常包含图片）
-        if (tagName === 'figure') {
-            const content = parseChildren(element).trim();
-            return `\n\n${content}\n\n`;
-        }
-
-        // 图片说明
-        if (tagName === 'figcaption') {
-            const content = parseChildren(element).trim();
-            return content ? `\n*${content}*\n` : '';
-        }
-
-        // 知乎用户@链接
-        if (tagName === 'span' && element.classList.contains('UserLink')) {
-            return parseUserLink(element);
-        }
-
-        // 知乎搜索实体链接
-        if (tagName === 'span' && element.hasAttribute('data-search-entity')) {
-            return element.textContent;
-        }
-
-        // 链接卡片 <div class="RichText-LinkCardContainer">
-        if (tagName === 'div' && element.classList.contains('RichText-LinkCardContainer')) {
-            return parseLinkCard(element);
-        }
-
-        // <noscript> — JS环境下子节点为原始文本，直接跳过
-        if (tagName === 'noscript') {
-            return '';
-        }
-
-        // 分隔线
-        if (tagName === 'hr') {
-            return '\n\n---\n\n';
-        }
-
-        // 默认：递归解析子元素
-        return parseChildren(element);
+        // 所有处理器均未命中则递归解析子节点
+        return parseChildren(node);
     }
 
     /**
-     * 解析子元素
+     * 递归解析子节点列表
      */
     function parseChildren(element) {
-        return Array.from(element.childNodes).map(parseElement).join('');
+        return Array.from(element.childNodes).map(dispatch).join('');
+    }
+
+    // 处理器实现
+
+    /**
+     * 粗体/斜体等内联包裹元素
+     */
+    function wrapInline(element, marker) {
+        const text = parseChildren(element).trim();
+        return text ? `${marker}${text}${marker}` : '';
     }
 
     /**
@@ -190,28 +150,22 @@
      */
     function parseMathFormula(element) {
         let tex = element.getAttribute('data-tex') || '';
-
-        // 判断是否为块级公式：以 \\ 结尾
         const isBlock = tex.trim().endsWith('\\\\');
 
         if (isBlock) {
-            // 块级公式：去掉末尾的 \\
             tex = tex.trim().replace(/\\\\$/, '').trim();
             return `\n\n$$\n${tex}\n$$\n\n`;
-        } else {
-            // 行内公式
-            return `$${tex}$`;
         }
+        return `$${tex}$`;
     }
 
     /**
-     * 解析链接
+     * 解析链接，并去掉知乎直答和关键词内部搜索链接
      */
     function parseLink(element) {
         let href = element.getAttribute('href') || '';
         const text = parseChildren(element).trim();
 
-        // 知乎关键词实体链接(知乎直答，内部搜索) → 仅保留文本
         if (element.classList.contains('RichContent-EntityWord')
             || href.includes('zhida.zhihu.com/search')
             || href.includes('www.zhihu.com/search')) {
@@ -252,31 +206,62 @@
     }
 
     /**
-     * 解析引用块
+     * 解析代码块
+     */
+    function parseCodeBlock(element) {
+        const code = element.querySelector('code');
+        const language = code?.className.match(/language-(\w+)/)?.[1] || '';
+        const content = code?.textContent || element.textContent;
+        return `\n\n\`\`\`${language}\n${content}\n\`\`\`\n\n`;
+    }
+
+    /**
+     * 解析段落，处理知乎空段落
+     */
+    function parseParagraph(element) {
+        if (element.classList.contains('ztext-empty-paragraph')) {
+            return '\n\n';
+        }
+        const content = parseChildren(element).trim();
+        return content ? `\n\n${content}\n\n` : '';
+    }
+
+    /**
+     * 解析引用块（保留空行以支持多段引用）
      */
     function parseBlockquote(element) {
         const content = parseChildren(element).trim();
-        const lines = content.split('\n').filter(line => line.trim());
-        const quoted = lines.map(line => `> ${line.trim()}`).join('\n');
+        if (!content) return '';
+        const lines = content.split('\n');
+        const quoted = lines.map(line => line.trim() ? `> ${line.trim()}` : '>').join('\n');
         return `\n\n${quoted}\n\n`;
     }
 
     /**
-     * 解析列表
+     * 解析标题 h1~h6
      */
-    function parseList(element, tagName) {
+    function parseHeading(element) {
+        const level = parseInt(element.tagName[1]);
+        const content = parseChildren(element).trim();
+        return content ? `\n\n${'#'.repeat(level)} ${content}\n\n` : '';
+    }
+
+    /**
+     * 解析列表（仅处理一级列表项）
+     */
+    function parseList(element) {
+        const isOrdered = isTag(element, 'ol');
         const items = Array.from(element.querySelectorAll(':scope > li')).map((li, i) => {
             const content = parseChildren(li).trim();
-            return tagName === 'ul' ? `- ${content}` : `${i + 1}. ${content}`;
+            return isOrdered ? `${i + 1}. ${content}` : `- ${content}`;
         });
         return `\n\n${items.join('\n')}\n\n`;
     }
 
     /**
-     * 解析图片
+     * 解析图片（处理知乎懒加载，data-original 优先级最高）
      */
     function parseImage(element) {
-        // 这里的优先级必须后置src属性，否则会错误抓到懒加载占位符
         const src = element.getAttribute('data-original') ||
             element.getAttribute('data-actualsrc') ||
             element.getAttribute('data-src') ||
@@ -293,6 +278,7 @@
     function normalizeWhitespace(text) {
         let lines = text.split('\n').map(line => line.replace(/^[ \t]+/, ''));  // 保留行末的双空格 markdown 硬换行标记
         text = lines.join('\n');
+        // 去掉段落间的重复空行
         text = text.replace(/\n{3,}/g, '\n\n');
         return text.trim();
     }
@@ -304,7 +290,6 @@
         const selectors = [
             'h1.Post-Title',
             '.QuestionHeader-title',
-            'h1[data-zop]',
             'title'
         ];
 
@@ -346,26 +331,30 @@
      */
     function convertToMarkdown() {
         // 查找文章内容区域
+
+        // 文章: Post-RichTextContainer > RichText.ztext.Post-RichText
+        // 回答: RichContent > RichContent-inner > RichText.ztext.CopyrightRichText-richText
         const contentSelectors = [
-            '.RichText.ztext.Post-RichText',
-            '.RichText.ztext.css-1g0fqss',
-            '.RichText.ztext',
-            '.Post-RichTextContainer .RichText'
+            '.RichText.ztext.Post-RichText',              // 文章
+            '.RichContent-inner .RichText.ztext',         // 回答
+            '.Post-RichTextContainer .RichText',          // 文章降级
+            '.RichText.ztext',                            // 兜底
         ];
 
-        let contentDiv = null;
+        let content = null;
         for (const selector of contentSelectors) {
-            contentDiv = document.querySelector(selector);
-            if (contentDiv) break;
+            content = document.querySelector(selector);
+            if (content) break;
         }
 
-        if (!contentDiv) {
-            alert('未找到文章内容区域\n\n请确保当前页面是知乎专栏文章或回答页面。');
+        if (CONFIG.debugFailure) content = null;
+        if (!content) {
+            showToast('未找到文章内容', false);
             return null;
         }
 
         // 解析正文
-        let body = parseChildren(contentDiv);
+        let body = parseChildren(content);
         body = normalizeWhitespace(body);
 
         // 构建头部：标题 + 作者 + 时间
@@ -375,11 +364,10 @@
 
         const { name, url } = getAuthorInfo();
         const timeStr = getTimeInfo();
-        const pageUrl = location.href;
-        if (pageUrl) header += `原文：${pageUrl}  \n`;  // 双空格是必须的
+        header += `原文：${location.href}  \n`;  // 双空格是必须的
         if (name && url) header += `作者：[${name}](${url})  \n`;
         if (timeStr) header += `${timeStr}\n`;
-        if (header && !header.endsWith('\n\n')) header += '  \n';
+        if (header && !header.endsWith('\n\n')) header += '\n\n';
 
         return header + body;
     }
@@ -413,14 +401,19 @@
                 box-shadow:0 4px 12px rgba(23,114,246,.25);
             }
             .zhihu-md-tooltip {
-                position:fixed;z-index:10000;
+                position:absolute;bottom:calc(100% + 8px);left:50%;
+                transform:translateX(-50%);
                 background:rgba(25,27,31,.8);color:#fff;
                 border-radius:4px;font-size:13px;
                 padding:6px 8px;white-space:nowrap;
                 font-family:${ZH.fontFamily};
                 opacity:0;visibility:hidden;
-                transition:opacity .15s ease,visibility .15s ease;
+                transition:opacity .2s ease,visibility .2s ease;
                 pointer-events:none;
+            }
+            #zhihu-md-wrapper:hover .zhihu-md-tooltip {
+                opacity:1;visibility:visible;
+                transition-delay:0.75s;
             }
             .zhihu-md-tooltip-arrow {
                 position:absolute;bottom:0;left:50%;
@@ -443,7 +436,7 @@
                 text-align:center;padding:0;outline:none;
                 font-family:inherit;flex-shrink:0;
                 display:flex;align-items:center;justify-content:center;
-                opacity:0;transition:opacity .15s ease;
+                opacity:0;transition:opacity .5s ease;
             }
             #zhihu-md-wrapper:hover #zhihu-md-close-btn {
                 opacity:1;
@@ -453,7 +446,7 @@
     }
 
     /**
-     * 悬浮按钮 —— 复制 icon + 文字，hover 显示 tooltip
+     * 悬浮按钮  复制 icon + 文字，hover 显示 tooltip
      */
     function createButton() {
         injectTooltipStyle();
@@ -477,54 +470,36 @@
         tooltip.className = 'zhihu-md-tooltip';
         const isPost = location.hostname === 'zhuanlan.zhihu.com';
         tooltip.innerHTML = `<div class="zhihu-md-tooltip-arrow"></div>${isPost ? '复制文章为markdown格式' : '复制回答为markdown格式'}`;
-        document.body.appendChild(tooltip);
-
-        // tooltip 基于 wrapper 定位
-        wrapper.addEventListener('mouseenter', () => {
-            const r = wrapper.getBoundingClientRect();
-            tooltip.style.left = `${r.left + r.width / 2}px`;
-            tooltip.style.top = `${r.top - 8}px`;
-            tooltip.style.transform = 'translate(-50%, -100%)';
-            tooltip.style.opacity = '1';
-            tooltip.style.visibility = 'visible';
-        });
-        wrapper.addEventListener('mouseleave', () => {
-            tooltip.style.opacity = '0';
-            tooltip.style.visibility = 'hidden';
-        });
 
         closeBtn.addEventListener('click', () => {
             wrapper.style.display = 'none';
-            tooltip.style.display = 'none';
         });
 
         btn.addEventListener('click', handleConvert);
 
-        wrapper.appendChild(closeBtn);
         wrapper.appendChild(btn);
+        wrapper.appendChild(closeBtn);
+        wrapper.appendChild(tooltip);
         document.body.appendChild(wrapper);
-
-        return { btn, wrapper, tooltip };
     }
 
-    let btnEl = null;
-    let tooltipEl = null;
 
     /**
      * 复用按钮为toast
      */
     function showToast(text, ok) {
-        if (!btnEl) return;
-        const span = btnEl.querySelector('.zhihu-md-btn-text');
+        const btn = document.getElementById('zhihu-to-markdown-btn');
+        if (!btn) return;
+        const span = btn.querySelector('.zhihu-md-btn-text');
         if (!span) return;
         const orig = span.textContent;
         span.textContent = text;
-        btnEl.style.background = ok ? '#00c853' : '#f44336';
-        btnEl.style.borderColor = ok ? '#00c853' : '#f44336';
+        btn.style.background = ok ? '#00c853' : '#f44336';
+        btn.style.borderColor = ok ? '#00c853' : '#f44336';
         setTimeout(() => {
             span.textContent = orig;
-            btnEl.style.background = ZH.blue;
-            btnEl.style.borderColor = ZH.blue;
+            btn.style.background = ZH.blue;
+            btn.style.borderColor = ZH.blue;
         }, 3000);
     }
 
@@ -600,9 +575,7 @@
 
     function init() {
         if (document.getElementById('zhihu-md-wrapper')) return;
-        const objs = createButton();
-        btnEl = objs.btn;
-        tooltipEl = objs.tooltip;
+        createButton();
     }
 
     // 页面加载完成后初始化

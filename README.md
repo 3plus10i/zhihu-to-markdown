@@ -1,4 +1,4 @@
-# 知乎转Markdown
+# 复制知乎内容为Markdown
 
 > Forked from [RustyPiano/zhihu-to-markdown](https://github.com/RustyPiano/zhihu-to-markdown) (MIT)
 
@@ -13,13 +13,12 @@
 
 ## 安装
 
-1. 安装 [Tampermonkey](https://www.tampermonkey.net/)
-2. [点击从Github安装脚本](https://raw.githubusercontent.com/3plus10i/zhihu-to-markdown/main/zhihu_to_markdown.user.js)
+1. 推荐 [从 Greasy Fork 安装](https://greasyfork.org/) 
+2. 或者 [从 Github 安装脚本](https://raw.githubusercontent.com/3plus10i/zhihu-to-markdown/main/zhihu_to_markdown.user.js)
 
-## 支持页面
+## 项目主页
 
-- `zhuanlan.zhihu.com/p/*`
-- `www.zhihu.com/question/*/answer/*`
+[3plus10i/zhihu-to-markdown](https://github.com/3plus10i/zhihu-to-markdown)
 
 ## 许可证
 
